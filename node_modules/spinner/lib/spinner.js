@@ -1,0 +1,643 @@
+var spawn = require('child_process').spawn;
+var fs = require('fs');
+var path = require('path');
+var fsmjs = require('fsmjs');
+var async = require('async');
+var portscanner = require('portscanner');
+var ctxobj = require('ctxobj');
+var unixdomainports = require('./unixdomainports');
+
+exports.createSpinner = function (globalOptions) {
+  var api = {};
+
+  // default options
+  globalOptions = globalOptions || {};
+  globalOptions.command = globalOptions.command || process.execPath;
+  globalOptions.timeout = globalOptions.timeout || 30;
+  globalOptions.stopTimeout = globalOptions.stopTimeout || 30;
+  globalOptions.stdout = globalOptions.stdout || process.stdout;
+  globalOptions.stderr = globalOptions.stderr || process.stderr;
+  globalOptions.logger = globalOptions.logger || ctxobj.console(console);
+  globalOptions.env = globalOptions.env || {};
+  globalOptions.cwd = globalOptions.cwd || null;
+  globalOptions.fsmTraces = globalOptions.fsmTraces || false;
+  globalOptions.portalloc = globalOptions.portalloc || unixdomainports();
+  globalOptions.idleTimeSec = globalOptions.idleTimeSec || (30 * 60); // default 30 minutes before idling a process, -1 for no idle time
+  globalOptions.restartTolerance = globalOptions.restartTolerance || 60; // number of seconds allowed between restarts
+  globalOptions.faultTimeout = globalOptions.faultTimeout || 60; // number of seconds to remain in fault state
+
+  api.start = function (options, callback) {
+    if (!callback) callback = function () { };
+    if (!options) throw new Error("first argument should be a options hash or a script path");
+
+    // if options is a string, treat as script
+    if (typeof options === "string") options = { script: options };
+
+    // if script is provided, use it as the first argument
+    if (options.script) {
+      options.name = options.name || options.script;
+
+      if (options.args) options.args.unshift(options.script);
+      else options.args = [options.script];
+
+      if (!('monitor' in options) && !('monitor' in globalOptions)) {
+        var fn = options.script;
+
+        // if the script doesn't end with '.js', append it.
+        if (path.extname(fn) === '') fn += ".js";
+
+        options.monitor = fn;
+      }
+
+      delete options.script;
+    }
+
+    // if command is not provided, default to node.js
+    options.command = options.command || globalOptions.command;
+
+    // logger can be overriden
+    var logger = options.logger || globalOptions.logger;
+    delete options.logger;
+    logger = ctxobj.console(logger).pushctx(options.name);
+    options.logger = logger;
+
+    // default wait timeout is 5 seconds
+    options.timeout = options.timeout || globalOptions.timeout;
+
+    // stop timeout defaults to 30 sec
+    options.stopTimeout = options.stopTimeout || globalOptions.stopTimeout;
+
+    // environment hash
+    options.env = options.env || globalOptions.env;
+
+    // pipe stdout/stderr
+    options.stdout = options.stdout || globalOptions.stdout;
+    options.stderr = options.stderr || globalOptions.stderr;
+
+    // working directory
+    options.cwd = options.cwd || null;
+
+    // portalloc
+    options.portalloc = options.portalloc || globalOptions.portalloc;
+
+    // idle time
+    options.idleTimeSec = options.idleTimeSec || globalOptions.idleTimeSec;
+
+    // restart tolerance
+    options.restartTolerance = options.restartTolerance || globalOptions.restartTolerance;
+
+    // fault timeout
+    options.faultTimeout = options.faultTimeout || globalOptions.faultTimeout;
+
+    // watch
+    options.monitor = options.monitor || globalOptions.monitor;
+
+    // make sure we have a name
+    if (!options.name) throw new Error('options.name is required');
+
+    // obtain a spinner obj
+    var fsm = createFsm(options);
+
+    function _onSuccess() {
+      _removeListeners();
+      return callback(null, fsm.port);
+    }
+
+    function _onFailure() {
+      _removeListeners();
+      var msg = (fsm.errors && fsm.errors.length > 0) ? fsm.errors.join('\n') : 'Unable to start';
+      return callback(new Error(msg));
+    }
+
+    function _removeListeners() {
+      fsm.removeListener('started', _onSuccess);
+      fsm.removeListener('restarted', _onSuccess);
+      fsm.removeListener('error', _onFailure);
+    }
+
+    fsm.once('started', _onSuccess);
+    fsm.once('restarted', _onSuccess);
+    fsm.once('error', _onFailure);
+
+    // hit it
+    fsm.trigger('start');
+    return fsm;
+  };
+
+  api.stop = function (script, callback) {
+    if (!callback) callback = function () { };
+    var fsm = spinnerByName[script];
+
+    // if we don't have an fsm for that script, it is ''stopped''.
+    if (!fsm) return callback(null, "notfound");
+
+    fsm.once('stopped', function (status) {
+      return callback(null, status);
+    });
+
+    fsm.once('error', function (e) {
+      return callback(e);
+    });
+
+    fsm.trigger('stop');
+    return fsm;
+  };
+
+  api.stopall = function (callback) {
+    if (!callback) callback = function () { };
+    return async.forEach(
+            Object.keys(spinnerByName),
+            function (name, cb) { api.stop(name, cb); },
+            callback);
+  };
+
+  api.list = function () {
+    var result = {};
+    for (var name in spinnerByName) {
+      result[name] = api.get(name);
+    }
+    return result;
+  };
+
+  api.get = function (name) {
+    var fsm = spinnerByName[name];
+    if (!fsm) return null;
+
+    var desc = fsm.options;
+
+    switch (fsm.state) {
+      case 'findport':
+      case 'wait':
+        desc.state = 'starting';
+        break;
+
+      default:
+        desc.state = fsm.state;
+        break;
+    }
+
+    desc.port = fsm.port;
+
+    return desc;
+  }
+
+  // -- implementation
+
+  var spinnerByName = {}; // hash of all the spinners by name
+
+  function createFsm(options) {
+    var name = options.name;
+
+    // if fsm already exists, return it
+    var fsm = spinnerByName[options.name];
+    if (fsm) return fsm;
+
+    var spinner = {
+
+      stopped: {
+        $enter: function (cb) {
+          spinner.qemit('stopped');
+
+          // if there is a file monitor enabled, clear it at this stage.
+          if (spinner.watch) {
+            spinner.watch.close();
+            spinner.watch = null
+          }
+
+          clearIdleTimer();
+
+          return cb();
+        },
+
+        start: function (cb) {
+          spinner.state = 'findport';
+
+          restartIdleTimer();
+
+          return cb();
+        },
+
+        stop: function (cb) {
+          spinner.trigger('$enter');
+          return cb();
+        },
+
+        term: function (cb) {
+          spinner.logger.error('term trigger emitted while stopped. this should not happen');
+          return cb();
+        },
+
+        changed: function (cb) {
+          return cb();
+        },
+
+        $exit: function (cb) {
+
+          // start monitoring the file for changes
+          if (spinner.options.monitor) {
+            if (!spinner.watch) {
+              try {
+                spinner.watch = fs.watch(spinner.options.monitor, function (event) {
+                  spinner.trigger('changed');
+                });
+              }
+              catch (e) {
+                spinner.logger.error('unable to setup watch on ' + spinner.options.monitor, e);
+              }
+            }
+          }
+
+          return cb();
+        }
+      },
+
+      findport: {
+        $enter: function (cb) {
+          spinner.options.portalloc.alloc(spinner.name, function (err, port) {
+
+            // don't do anything if the state is not findport
+            if (spinner.state !== 'findport') return;
+
+            if (err) {
+              spinner.logger.error('out of ports... sorry... try again later');
+              spinner.state = 'faulted';
+              return;
+            }
+            else {
+              // spawn the child process and store state
+              spinner.port = port;
+              var env = spinner.options.env || {};
+              env.port = env.PORT = spinner.port;
+              var cwd = spinner.options.cwd;
+              spinner.child = spawn(spinner.options.command, spinner.options.args, { env: env, cwd: cwd });
+
+              spinner.child.on('exit', function (code, signal) {
+                spinner.exitStatus = code;
+                spinner.child.removeAllListeners();
+                spinner.child = null;
+                spinner.options.portalloc.free(spinner.port, spinner.logger);
+                spinner.port = null;
+                return spinner.trigger('term', code, signal);
+              });
+
+              // reset errors array
+              spinner.errors = [];
+
+              spinner.child.stdout.on('data', function (data) { return spinner.emit('stdout', data); });
+              spinner.child.stderr.on('data', function (data) {
+
+                if (data) {
+                  var c = data.toString();
+                  c.split('\n').forEach(function (line) {
+                    if (line && line.length) {
+                      line = '[stderr] ' + line;
+
+                      // if we stderr was not piped, output to stderr to log
+                      if (!spinner.options.stderr) {
+                        spinner.logger.info(line);
+                      }
+
+                      // add up to 100 error lines (take up to 200 characters per line).
+                      if (spinner.errors.length < 100) {
+                        spinner.errors.push(line.substring(0, 200));
+                      }
+                    }
+                  });
+                }
+
+                return spinner.emit('stderr', data);
+              });
+
+              // pipe stdout/stderr if requested
+              // keep the original streams opened after close event
+              // as of node 0.6+ process.stdout.end() throws
+              if (spinner.options.stdout) spinner.child.stdout.pipe(spinner.options.stdout, { end: false });
+              if (spinner.options.stderr) spinner.child.stderr.pipe(spinner.options.stderr, { end: false });
+
+              spinner.state = 'wait';
+              return;
+            }
+          }, spinner.logger);
+
+          return cb();
+        },
+
+        start: function (cb) {
+          return cb();
+        },
+
+        stop: function (cb) {
+          spinner.state = 'stopped';
+          return cb();
+        },
+
+        term: function (cb) {
+          spinner.logger.error('child terminated during port lookup. this should not happen because we havent started the process yet');
+          return cb();
+        },
+
+        changed: function (cb) {
+          return cb();
+        }
+      },
+
+      wait: {
+        $enter: function (cb) {
+          spinner.wait.tries = spinner.options.timeout * 2;
+          spinner.wait.backoff = 500;
+
+          function _waitForBind() {
+
+            if (spinner.wait.tries-- === 0) {
+              spinner.logger.error('timeout waiting for port ' + spinner.port);
+              spinner.child.kill('SIGKILL'); // this will eventually trigger 'term'
+              return;
+            }
+
+            portscanner.checkPortStatus(spinner.port, 'localhost', function (err, status) {
+
+              // don't do anything if we are not in 'wait'
+              if (spinner.state !== 'wait') return;
+
+              if (status === "open") {
+                spinner.state = 'started';
+              }
+              else {
+                spinner.waitTimeout = setTimeout(_waitForBind, spinner.wait.backoff);
+              }
+            });
+          }
+
+          _waitForBind();
+
+          return cb();
+        },
+
+        start: function (cb) {
+          return cb();
+        },
+
+        stop: function (cb) {
+          spinner.state = 'stopping';
+          cb();
+        },
+
+        term: function (cb) {
+          spinner.logger.error('process terminated while waiting');
+          spinner.state = 'faulted';
+          return cb();
+        },
+
+        changed: function (cb) {
+          spinner.state = 'restarting';
+          return cb();
+        },
+
+        $exit: function (cb) {
+          if (spinner.waitTimeout) {
+            clearTimeout(spinner.waitTimeout);
+          }
+          return cb();
+        }
+      },
+
+      faulted: {
+        $enter: function (cb) {
+          spinner.logger.warn('child process terminated. waiting for a change to restart or timeout');
+          qemitError(new Error("unable to start child process"));
+          spinner.faultedTime = new Date();
+          return cb();
+        },
+
+        start: function (cb) {
+          var delta = (new Date() - spinner.faultedTime) / 1000;
+          if (delta < options.faultTimeout) {
+            qemitError(new Error('child in faulted state, can start by modifying the file or after timeout'));
+          }
+          else {
+            spinner.started.emit = "restarted";
+            spinner.state = 'findport';
+          }
+          return cb();
+        },
+
+        stop: function (cb) {
+          spinner.state = 'stopped';
+          return cb();
+        },
+
+        term: function (cb) {
+          spinner.logger.error('term trigger while in faulted state. shouldnt happen');
+          return cb();
+        },
+
+        changed: function (cb) {
+          spinner.started.emit = "restarted";
+          spinner.state = 'findport';
+          return cb();
+        },
+
+        $exit: function (cb) {
+          delete spinner.faultedTime;
+          return cb();
+        }
+      },
+
+      started: {
+        $enter: function (cb, prev) {
+
+          // do not emit 'started' if we came from the same state
+          if (spinner.started.emit) {
+            spinner.qemit(spinner.started.emit, spinner.port);
+            delete spinner.started.emit;
+          }
+          else {
+            spinner.qemit('started', spinner.port);
+          }
+
+          return cb();
+        },
+
+        start: function (cb) {
+          restartIdleTimer();
+          spinner.trigger('$enter');
+          return cb();
+        },
+
+        stop: function (cb) {
+          spinner.state = 'stopping'
+          return cb();
+        },
+
+        term: function (cb) {
+          spinner.logger.warn('child terminated unexpectedly, restarting');
+
+          var now = new Date();
+
+          // if the last termination was less than 1 minute ago, we will move the process
+          // to a faulted state because it misbehaves.
+          if (spinner.started.lastTerminationTime) {
+            var delta = (now - spinner.started.lastTerminationTime) / 1000;
+            if (delta < spinner.options.restartTolerance) {
+              var errorMessage = 'Last restart was less than ' + spinner.options.restartTolerance + ' seconds ago (' + delta + 'sec). Child is now faulted (deploy new code to restart or wait one minute).';
+              spinner.logger.error(errorMessage);
+              spinner.errors.push(errorMessage);
+              spinner.state = 'faulted';
+              delete spinner.started.lastTerminationTime;
+              return cb();
+            }
+          }
+
+          spinner.state = 'restarting';
+          spinner.started.lastTerminationTime = now;
+          return cb();
+        },
+
+        changed: function (cb) {
+          spinner.state = 'restarting';
+          return cb();
+        }
+      },
+
+      restarting: {
+        $enter: function (cb) {
+
+          if (spinner.child) {
+            spinner.child.kill('SIGKILL');
+          }
+          else {
+            spinner.trigger('term');
+          }
+
+          return cb();
+        },
+
+        start: function (cb) {
+          return cb();
+        },
+
+        stop: function (cb) {
+          spinner.state = 'stopping';
+          //TODO: test
+          return cb();
+        },
+
+        term: function (cb) {
+          // emit `restarted` event after the child is started again
+          spinner.started.emit = "restarted";
+          spinner.state = 'findport';
+          return cb();
+        },
+
+        changed: function (cb) {
+          return cb();
+        }
+      },
+
+      stopping: {
+        $enter: function (cb) {
+
+          if (spinner.child) {
+            spinner.child.kill('SIGKILL');
+          }
+          else {
+            // the child is already killed, simulate a 'term'
+            spinner.trigger('term');
+          }
+
+          cb();
+        },
+
+        start: function (cb) {
+          // TODO: should probably queue a 'start' after stopping is completed.
+          return cb();
+        },
+
+        stop: function (cb) {
+          return cb();
+        },
+
+        term: function (cb, status) {
+          spinner.state = 'stopped';
+          return cb();
+        },
+
+        changed: function (cb) {
+          return cb();
+        }
+      }
+    };
+
+    verifyIntegrity(spinner); // verifies that all states handle all events
+
+    var fsm = spinnerByName[name] = fsmjs(spinner);
+
+    // remove limit for max listeners on fsm object.
+    fsm.setMaxListeners(0);
+
+    // catch-all so that subsequent error events will not crash the process
+    // since node.js will throw any `error` events without listeners.
+    fsm.on('error', function (err) {
+      options.logger.error('Error in state "' + fsm.state + '":', err);
+    });
+
+    // enable fsm traces is required
+    if (globalOptions.fsmTraces) {
+      var fsmlogger = options.logger.pushctx('fsm');
+      fsm.on('$debug', function (e) {
+        fsmlogger.log('FSM:', e);
+      });
+    }
+
+    // store options & logger
+    fsm.options = options;
+    fsm.logger = options.logger;
+    fsm.name = options.name;
+
+    //
+    // some helper functions
+    //
+
+    function qemitError(err) {
+      console.error(err);
+      spinner.qemit('error', err);
+    }
+
+    // verifies that all events are handled by all states.
+    function verifyIntegrity(fsm) {
+      var events = ['start', 'stop', 'term', 'changed'];
+      for (var state in fsm) {
+        var handlers = fsm[state];
+        events.forEach(function (e) {
+          if (!handlers[e]) options.logger.error("Event '" + e + "' not handled by state '" + state + "'");
+        });
+      }
+    }
+
+    //
+    // manage idle timer
+    //
+
+    // called at stop.start and start.start
+    function restartIdleTimer() {
+      if (spinner.options.idleTimeSec && spinner.options.idleTimeSec !== -1) {
+        if (spinner.idleTimer) {
+          clearTimeout(spinner.idleTimer);
+        }
+
+        spinner.idleTimer = spinner.timeout('stop', spinner.options.idleTimeSec * 1000);
+      }
+    }
+
+    // called at stop.$enter
+    function clearIdleTimer() {
+      if (spinner.idleTimer) {
+        clearTimeout(spinner.idleTimer);
+      }
+    }
+
+    return fsm;
+  }
+
+  return api;
+};
