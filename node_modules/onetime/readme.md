@@ -1,4 +1,4 @@
-# onetime [![Build Status](https://travis-ci.com/sindresorhus/onetime.svg?branch=master)](https://travis-ci.com/github/sindresorhus/onetime)
+# onetime
 
 > Ensure a function is only called once
 
@@ -8,18 +8,18 @@ When called multiple times it will return the return value from the first call.
 
 ## Install
 
-```
-$ npm install onetime
+```sh
+npm install onetime
 ```
 
 ## Usage
 
 ```js
-const onetime = require('onetime');
+import onetime from 'onetime';
 
-let i = 0;
+let index = 0;
 
-const foo = onetime(() => ++i);
+const foo = onetime(() => ++index);
 
 foo(); //=> 1
 foo(); //=> 1
@@ -29,7 +29,7 @@ onetime.callCount(foo); //=> 3
 ```
 
 ```js
-const onetime = require('onetime');
+import onetime from 'onetime';
 
 const foo = onetime(() => {}, {throw: true});
 
@@ -49,7 +49,7 @@ Returns a function that only calls `fn` once.
 
 Type: `Function`
 
-Function that should only be called once.
+The function that should only be called once.
 
 #### options
 
@@ -69,7 +69,7 @@ Returns a number representing how many times `fn` has been called.
 Note: It throws an error if you pass in a function that is not wrapped by `onetime`.
 
 ```js
-const onetime = require('onetime');
+import onetime from 'onetime';
 
 const foo = onetime(() => {});
 
@@ -85,10 +85,4 @@ console.log(onetime.callCount(foo));
 
 Type: `Function`
 
-Function to get call count from.
-
-## onetime for enterprise
-
-Available as part of the Tidelift Subscription.
-
-The maintainers of onetime and thousands of other packages are working with Tidelift to deliver commercial support and maintenance for the open source dependencies you use to build your applications. Save time, reduce risk, and improve code health, while paying the maintainers of the exact dependencies you use. [Learn more.](https://tidelift.com/subscription/pkg/npm-onetime?utm_source=npm-onetime&utm_medium=referral&utm_campaign=enterprise&utm_term=repo)
+The function to get call count from.

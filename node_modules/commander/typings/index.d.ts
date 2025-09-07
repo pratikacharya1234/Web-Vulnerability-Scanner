@@ -51,6 +51,7 @@ export class Argument {
   variadic: boolean;
   defaultValue?: any;
   defaultValueDescription?: string;
+  parseArg?: <T>(value: string, previous: T) => T;
   argChoices?: string[];
 
   /**
@@ -109,6 +110,7 @@ export class Option {
   parseArg?: <T>(value: string, previous: T) => T;
   hidden: boolean;
   argChoices?: string[];
+  helpGroupHeading?: string;
 
   constructor(flags: string, description?: string);
 
@@ -191,6 +193,11 @@ export class Option {
    * as an object attribute key.
    */
   attributeName(): string;
+
+  /**
+   * Set the help group heading.
+   */
+  helpGroup(heading: string): this;
 
   /**
    * Return whether a boolean option.
@@ -312,6 +319,20 @@ export class Help {
     description: string,
     helper: Help,
   ): string;
+
+  /**
+   * Format a list of items, given a heading and an array of formatted items.
+   */
+  formatItemList(heading: string, items: string[], helper: Help): string[];
+
+  /**
+   * Group items by their help group heading.
+   */
+  groupItems<T extends Command | Option>(
+    unsortedItems: T[],
+    visibleItems: T[],
+    getGroup: (item: T) => string,
+  ): Map<string, T[]>;
 
   /** Generate the built-in help text. */
   formatHelp(cmd: Command, helper: Help): string;
@@ -466,7 +487,7 @@ export class Command {
   argument<T>(
     flags: string,
     description: string,
-    fn: (value: string, previous: T) => T,
+    parseArg: (value: string, previous: T) => T,
     defaultValue?: T,
   ): this;
   argument(name: string, description?: string, defaultValue?: unknown): this;
@@ -967,6 +988,53 @@ export class Command {
    * Get the executable search directory.
    */
   executableDir(): string | null;
+
+  /**
+   * Set the help group heading for this subcommand in parent command's help.
+   *
+   * @returns `this` command for chaining
+   */
+  helpGroup(heading: string): this;
+  /**
+   * Get the help group heading for this subcommand in parent command's help.
+   */
+  helpGroup(): string;
+
+  /**
+   * Set the default help group heading for subcommands added to this command.
+   * (This does not override a group set directly on the subcommand using .helpGroup().)
+   *
+   * @example
+   * program.commandsGroup('Development Commands:);
+   * program.command('watch')...
+   * program.command('lint')...
+   * ...
+   *
+   * @returns `this` command for chaining
+   */
+  commandsGroup(heading: string): this;
+  /**
+   * Get the default help group heading for subcommands added to this command.
+   */
+  commandsGroup(): string;
+
+  /**
+   * Set the default help group heading for options added to this command.
+   * (This does not override a group set directly on the option using .helpGroup().)
+   *
+   * @example
+   * program
+   *   .optionsGroup('Development Options:')
+   *   .option('-d, --debug', 'output extra debugging')
+   *   .option('-p, --profile', 'output profiling information')
+   *
+   * @returns `this` command for chaining
+   */
+  optionsGroup(heading: string): this;
+  /**
+   * Get the default help group heading for options added to this command.
+   */
+  optionsGroup(): string;
 
   /**
    * Output help information for this command.

@@ -38,6 +38,7 @@ Read this in other languages: English | [简体中文](./Readme_zh-CN.md)
     - [.description and .summary](#description-and-summary)
     - [.helpOption(flags, description)](#helpoptionflags-description)
     - [.helpCommand()](#helpcommand)
+    - [Help Groups](#help-groups)
     - [More configuration](#more-configuration-2)
   - [Custom event listeners](#custom-event-listeners)
   - [Bits and pieces](#bits-and-pieces)
@@ -334,7 +335,8 @@ add cheese type mozzarella
 ```
 
 Options with an optional option-argument are not greedy and will ignore arguments starting with a dash.
-So `id` behaves as a boolean option for `--id -5`, but you can use a combined form if needed like `--id=-5`.
+So `id` behaves as a boolean option for `--id -ABCD`, but you can use a combined form if needed like `--id=-ABCD`.
+Negative numbers are special and are accepted as an option-argument.
 
 For information about possible ambiguous cases, see [options taking varying arguments](./docs/options-in-depth.md).
 
@@ -926,6 +928,14 @@ program.helpCommand('assist [command]', 'show assistance');
 
 (Or use `.addHelpCommand()` to add a command you construct yourself.)
 
+### Help Groups
+
+The help by default lists options under the the heading `Options:` and commands under `Commands:`. You can create your own groups
+with different headings. The high-level way is to set the desired group heading while adding the options and commands,
+using `.optionsGroup()` and `.commandsGroup()`. The low-level way is using `.helpGroup()` on an individual `Option` or `Command`
+
+Example file: [help-groups.js](./examples/help-groups.js)
+
 ### More configuration
 
 The built-in help is formatted using the Help class.
@@ -933,7 +943,7 @@ You can configure the help by modifying data properties and methods using `.conf
 
 Simple properties include `sortSubcommands`, `sortOptions`, and `showGlobalOptions`. You can add color using the style methods like `styleTitle()`.
 
-For more detail and examples of changing the displayed text, color, and layout see (./docs/help-in-depth.md)
+For more detail and examples of changing the displayed text, color, and layout see (./docs/help-in-depth.md).
 
 ## Custom event listeners
 
@@ -999,8 +1009,8 @@ program arg --port=80
 
 By default, the option processing shows an error for an unknown option. To have an unknown option treated as an ordinary command-argument and continue looking for options, use `.allowUnknownOption()`. This lets you mix known and unknown options.
 
-By default, the argument processing does not display an error for more command-arguments than expected.
-To display an error for excess arguments, use`.allowExcessArguments(false)`.
+By default, the argument processing displays an error for more command-arguments than expected.
+To suppress the error for excess arguments, use`.allowExcessArguments()`.
 
 ### Legacy options as properties
 
@@ -1137,7 +1147,7 @@ There is more information available about:
 
 ## Support
 
-The current version of Commander is fully supported on Long Term Support versions of Node.js, and requires at least v18.
+The current version of Commander is fully supported on Long Term Support versions of Node.js, and requires at least v20.
 (For older versions of Node.js, use an older version of Commander.)
 
 The main forum for free and community support is the project [Issues](https://github.com/tj/commander.js/issues) on GitHub.

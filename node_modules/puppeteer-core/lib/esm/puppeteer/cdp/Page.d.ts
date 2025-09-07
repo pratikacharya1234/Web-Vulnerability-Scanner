@@ -32,6 +32,10 @@ export declare class CdpPage extends Page {
     #private;
     static _create(client: CdpCDPSession, target: CdpTarget, defaultViewport: Viewport | null): Promise<CdpPage>;
     constructor(client: CdpCDPSession, target: CdpTarget);
+    resize(params: {
+        contentWidth: number;
+        contentHeight: number;
+    }): Promise<void>;
     _client(): CDPSession;
     isServiceWorkerBypassed(): boolean;
     isDragInterceptionEnabled(): boolean;
@@ -123,5 +127,8 @@ export declare class CdpPage extends Page {
      */
     waitForDevicePrompt(options?: WaitTimeoutOptions): Promise<DeviceRequestPrompt>;
 }
+/**
+ * @internal
+ */
 export declare function convertCookiesPartitionKeyFromPuppeteerToCdp(partitionKey: CookiePartitionKey | string | undefined): Protocol.Network.CookiePartitionKey | undefined;
 //# sourceMappingURL=Page.d.ts.map

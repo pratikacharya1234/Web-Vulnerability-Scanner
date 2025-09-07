@@ -352,7 +352,11 @@ class Help {
       extraInfo.push(`env: ${option.envVar}`);
     }
     if (extraInfo.length > 0) {
-      return `${option.description} (${extraInfo.join(', ')})`;
+      const extraDescription = `(${extraInfo.join(', ')})`;
+      if (option.description) {
+        return `${option.description} ${extraDescription}`;
+      }
+      return extraDescription;
     }
 
     return option.description;
@@ -386,6 +390,46 @@ class Help {
       return extraDescription;
     }
     return argument.description;
+  }
+
+  /**
+   * Format a list of items, given a heading and an array of formatted items.
+   *
+   * @param {string} heading
+   * @param {string[]} items
+   * @param {Help} helper
+   * @returns string[]
+   */
+  formatItemList(heading, items, helper) {
+    if (items.length === 0) return [];
+
+    return [helper.styleTitle(heading), ...items, ''];
+  }
+
+  /**
+   * Group items by their help group heading.
+   *
+   * @param {Command[] | Option[]} unsortedItems
+   * @param {Command[] | Option[]} visibleItems
+   * @param {Function} getGroup
+   * @returns {Map<string, Command[] | Option[]>}
+   */
+  groupItems(unsortedItems, visibleItems, getGroup) {
+    const result = new Map();
+    // Add groups in order of appearance in unsortedItems.
+    unsortedItems.forEach((item) => {
+      const group = getGroup(item);
+      if (!result.has(group)) result.set(group, []);
+    });
+    // Add items in order of appearance in visibleItems.
+    visibleItems.forEach((item) => {
+      const group = getGroup(item);
+      if (!result.has(group)) {
+        result.set(group, []);
+      }
+      result.get(group).push(item);
+    });
+    return result;
   }
 
   /**
@@ -429,28 +473,25 @@ class Help {
         helper.styleArgumentDescription(helper.argumentDescription(argument)),
       );
     });
-    if (argumentList.length > 0) {
-      output = output.concat([
-        helper.styleTitle('Arguments:'),
-        ...argumentList,
-        '',
-      ]);
-    }
+    output = output.concat(
+      this.formatItemList('Arguments:', argumentList, helper),
+    );
 
     // Options
-    const optionList = helper.visibleOptions(cmd).map((option) => {
-      return callFormatItem(
-        helper.styleOptionTerm(helper.optionTerm(option)),
-        helper.styleOptionDescription(helper.optionDescription(option)),
-      );
+    const optionGroups = this.groupItems(
+      cmd.options,
+      helper.visibleOptions(cmd),
+      (option) => option.helpGroupHeading ?? 'Options:',
+    );
+    optionGroups.forEach((options, group) => {
+      const optionList = options.map((option) => {
+        return callFormatItem(
+          helper.styleOptionTerm(helper.optionTerm(option)),
+          helper.styleOptionDescription(helper.optionDescription(option)),
+        );
+      });
+      output = output.concat(this.formatItemList(group, optionList, helper));
     });
-    if (optionList.length > 0) {
-      output = output.concat([
-        helper.styleTitle('Options:'),
-        ...optionList,
-        '',
-      ]);
-    }
 
     if (helper.showGlobalOptions) {
       const globalOptionList = helper
@@ -461,29 +502,26 @@ class Help {
             helper.styleOptionDescription(helper.optionDescription(option)),
           );
         });
-      if (globalOptionList.length > 0) {
-        output = output.concat([
-          helper.styleTitle('Global Options:'),
-          ...globalOptionList,
-          '',
-        ]);
-      }
+      output = output.concat(
+        this.formatItemList('Global Options:', globalOptionList, helper),
+      );
     }
 
     // Commands
-    const commandList = helper.visibleCommands(cmd).map((cmd) => {
-      return callFormatItem(
-        helper.styleSubcommandTerm(helper.subcommandTerm(cmd)),
-        helper.styleSubcommandDescription(helper.subcommandDescription(cmd)),
-      );
+    const commandGroups = this.groupItems(
+      cmd.commands,
+      helper.visibleCommands(cmd),
+      (sub) => sub.helpGroup() || 'Commands:',
+    );
+    commandGroups.forEach((commands, group) => {
+      const commandList = commands.map((sub) => {
+        return callFormatItem(
+          helper.styleSubcommandTerm(helper.subcommandTerm(sub)),
+          helper.styleSubcommandDescription(helper.subcommandDescription(sub)),
+        );
+      });
+      output = output.concat(this.formatItemList(group, commandList, helper));
     });
-    if (commandList.length > 0) {
-      output = output.concat([
-        helper.styleTitle('Commands:'),
-        ...commandList,
-        '',
-      ]);
-    }
 
     return output.join('\n');
   }

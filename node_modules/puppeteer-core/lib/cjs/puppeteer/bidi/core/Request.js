@@ -40,9 +40,11 @@ var __esDecorate = (this && this.__esDecorate) || function (ctor, descriptorIn, 
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Request = void 0;
+const Errors_js_1 = require("../../common/Errors.js");
 const EventEmitter_js_1 = require("../../common/EventEmitter.js");
 const decorators_js_1 = require("../../util/decorators.js");
 const disposable_js_1 = require("../../util/disposable.js");
+const encoding_js_1 = require("../../util/encoding.js");
 /**
  * @internal
  */
@@ -62,7 +64,8 @@ let Request = (() => {
             request.#initialize();
             return request;
         }
-        #error = __runInitializers(this, _instanceExtraInitializers);
+        #responseContentPromise = (__runInitializers(this, _instanceExtraInitializers), null);
+        #error;
         #redirect;
         #response;
         #browsingContext;
@@ -83,8 +86,20 @@ let Request = (() => {
             const sessionEmitter = this.#disposables.use(new EventEmitter_js_1.EventEmitter(this.#session));
             sessionEmitter.on('network.beforeRequestSent', event => {
                 if (event.context !== this.#browsingContext.id ||
-                    event.request.request !== this.id ||
-                    event.redirectCount !== this.#event.redirectCount + 1) {
+                    event.request.request !== this.id) {
+                    return;
+                }
+                // This is a workaround to detect if a beforeRequestSent is for a request
+                // sent after continueWithAuth. Currently, only emitted in Firefox.
+                const previousRequestHasAuth = this.#event.request.headers.find(header => {
+                    return header.name.toLowerCase() === 'authorization';
+                });
+                const newRequestHasAuth = event.request.headers.find(header => {
+                    return header.name.toLowerCase() === 'authorization';
+                });
+                const isAfterAuth = newRequestHasAuth && !previousRequestHasAuth;
+                if (event.redirectCount !== this.#event.redirectCount + 1 &&
+                    !isAfterAuth) {
                     return;
                 }
                 this.#redirect = Request.from(this.#browsingContext, event);
@@ -207,6 +222,27 @@ let Request = (() => {
                 headers,
                 body,
             });
+        }
+        async getResponseContent() {
+            if (!this.#responseContentPromise) {
+                this.#responseContentPromise = (async () => {
+                    try {
+                        const data = await this.#session.send('network.getData', {
+                            dataType: "response" /* Bidi.Network.DataType.Response */,
+                            request: this.id,
+                        });
+                        return (0, encoding_js_1.stringToTypedArray)(data.result.bytes.value, data.result.bytes.type === 'base64');
+                    }
+                    catch (error) {
+                        if (error instanceof Errors_js_1.ProtocolError &&
+                            error.originalMessage.includes('No resource with given identifier found')) {
+                            throw new Errors_js_1.ProtocolError('Could not load body for this request. This might happen if the request is a preflight request.');
+                        }
+                        throw error;
+                    }
+                })();
+            }
+            return await this.#responseContentPromise;
         }
         async continueWithAuth(parameters) {
             if (parameters.action === 'provideCredentials') {

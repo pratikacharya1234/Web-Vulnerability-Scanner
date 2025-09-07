@@ -80,6 +80,12 @@ class Command extends EventEmitter {
     /** @type {Command} */
     this._helpCommand = undefined; // lazy initialised, inherited
     this._helpConfiguration = {};
+    /** @type {string | undefined} */
+    this._helpGroupHeading = undefined; // soft initialised when added to parent
+    /** @type {string | undefined} */
+    this._defaultCommandGroup = undefined;
+    /** @type {string | undefined} */
+    this._defaultOptionGroup = undefined;
   }
 
   /**
@@ -239,7 +245,11 @@ class Command extends EventEmitter {
   configureOutput(configuration) {
     if (configuration === undefined) return this._outputConfiguration;
 
-    Object.assign(this._outputConfiguration, configuration);
+    this._outputConfiguration = Object.assign(
+      {},
+      this._outputConfiguration,
+      configuration,
+    );
     return this;
   }
 
@@ -320,16 +330,16 @@ class Command extends EventEmitter {
    *
    * @param {string} name
    * @param {string} [description]
-   * @param {(Function|*)} [fn] - custom argument processing function
+   * @param {(Function|*)} [parseArg] - custom argument processing function or default value
    * @param {*} [defaultValue]
    * @return {Command} `this` command for chaining
    */
-  argument(name, description, fn, defaultValue) {
+  argument(name, description, parseArg, defaultValue) {
     const argument = this.createArgument(name, description);
-    if (typeof fn === 'function') {
-      argument.default(defaultValue).argParser(fn);
+    if (typeof parseArg === 'function') {
+      argument.default(defaultValue).argParser(parseArg);
     } else {
-      argument.default(fn);
+      argument.default(parseArg);
     }
     this.addArgument(argument);
     return this;
@@ -400,11 +410,15 @@ class Command extends EventEmitter {
   helpCommand(enableOrNameAndArgs, description) {
     if (typeof enableOrNameAndArgs === 'boolean') {
       this._addImplicitHelpCommand = enableOrNameAndArgs;
+      if (enableOrNameAndArgs && this._defaultCommandGroup) {
+        // make the command to store the group
+        this._initCommandGroup(this._getHelpCommand());
+      }
       return this;
     }
 
-    enableOrNameAndArgs = enableOrNameAndArgs ?? 'help [command]';
-    const [, helpName, helpArgs] = enableOrNameAndArgs.match(/([^ ]+) *(.*)/);
+    const nameAndArgs = enableOrNameAndArgs ?? 'help [command]';
+    const [, helpName, helpArgs] = nameAndArgs.match(/([^ ]+) *(.*)/);
     const helpDescription = description ?? 'display help for command';
 
     const helpCommand = this.createCommand(helpName);
@@ -414,6 +428,8 @@ class Command extends EventEmitter {
 
     this._addImplicitHelpCommand = true;
     this._helpCommand = helpCommand;
+    // init group unless lazy create
+    if (enableOrNameAndArgs || description) this._initCommandGroup(helpCommand);
 
     return this;
   }
@@ -435,6 +451,7 @@ class Command extends EventEmitter {
 
     this._addImplicitHelpCommand = true;
     this._helpCommand = helpCommand;
+    this._initCommandGroup(helpCommand);
     return this;
   }
 
@@ -613,6 +630,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
 -  already used by option '${matchingOption.flags}'`);
     }
 
+    this._initOptionGroup(option);
     this.options.push(option);
   }
 
@@ -640,6 +658,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
       );
     }
 
+    this._initCommandGroup(command);
     this.commands.push(command);
   }
 
@@ -1737,6 +1756,17 @@ Expecting one of '${allowedValues.join("', '")}'`);
       return arg.length > 1 && arg[0] === '-';
     }
 
+    const negativeNumberArg = (arg) => {
+      // return false if not a negative number
+      if (!/^-\d*\.?\d+(e[+-]?\d+)?$/.test(arg)) return false;
+      // negative number is ok unless digit used as an option in command hierarchy
+      return !this._getCommandAndAncestors().some((cmd) =>
+        cmd.options
+          .map((opt) => opt.short)
+          .some((short) => /^-\d$/.test(short)),
+      );
+    };
+
     // parse options
     let activeVariadicOption = null;
     while (args.length) {
@@ -1749,7 +1779,10 @@ Expecting one of '${allowedValues.join("', '")}'`);
         break;
       }
 
-      if (activeVariadicOption && !maybeOption(arg)) {
+      if (
+        activeVariadicOption &&
+        (!maybeOption(arg) || negativeNumberArg(arg))
+      ) {
         this.emit(`option:${activeVariadicOption.name()}`, arg);
         continue;
       }
@@ -1766,7 +1799,10 @@ Expecting one of '${allowedValues.join("', '")}'`);
           } else if (option.optional) {
             let value = null;
             // historical behaviour is optional value is following arg unless an option
-            if (args.length > 0 && !maybeOption(args[0])) {
+            if (
+              args.length > 0 &&
+              (!maybeOption(args[0]) || negativeNumberArg(args[0]))
+            ) {
               value = args.shift();
             }
             this.emit(`option:${option.name()}`, value);
@@ -1812,7 +1848,12 @@ Expecting one of '${allowedValues.join("', '")}'`);
       // Might be a command-argument, or subcommand option, or unknown option, or help command or option.
 
       // An unknown option means further arguments also classified as unknown so can be reprocessed by subcommands.
-      if (maybeOption(arg)) {
+      // A negative number in a leaf command is not an unknown option.
+      if (
+        dest === operands &&
+        maybeOption(arg) &&
+        !(this.commands.length === 0 && negativeNumberArg(arg))
+      ) {
         dest = unknown;
       }
 
@@ -2295,6 +2336,75 @@ Expecting one of '${allowedValues.join("', '")}'`);
   }
 
   /**
+   * Set/get the help group heading for this subcommand in parent command's help.
+   *
+   * @param {string} [heading]
+   * @return {Command | string}
+   */
+
+  helpGroup(heading) {
+    if (heading === undefined) return this._helpGroupHeading ?? '';
+    this._helpGroupHeading = heading;
+    return this;
+  }
+
+  /**
+   * Set/get the default help group heading for subcommands added to this command.
+   * (This does not override a group set directly on the subcommand using .helpGroup().)
+   *
+   * @example
+   * program.commandsGroup('Development Commands:);
+   * program.command('watch')...
+   * program.command('lint')...
+   * ...
+   *
+   * @param {string} [heading]
+   * @returns {Command | string}
+   */
+  commandsGroup(heading) {
+    if (heading === undefined) return this._defaultCommandGroup ?? '';
+    this._defaultCommandGroup = heading;
+    return this;
+  }
+
+  /**
+   * Set/get the default help group heading for options added to this command.
+   * (This does not override a group set directly on the option using .helpGroup().)
+   *
+   * @example
+   * program
+   *   .optionsGroup('Development Options:')
+   *   .option('-d, --debug', 'output extra debugging')
+   *   .option('-p, --profile', 'output profiling information')
+   *
+   * @param {string} [heading]
+   * @returns {Command | string}
+   */
+  optionsGroup(heading) {
+    if (heading === undefined) return this._defaultOptionGroup ?? '';
+    this._defaultOptionGroup = heading;
+    return this;
+  }
+
+  /**
+   * @param {Option} option
+   * @private
+   */
+  _initOptionGroup(option) {
+    if (this._defaultOptionGroup && !option.helpGroupHeading)
+      option.helpGroup(this._defaultOptionGroup);
+  }
+
+  /**
+   * @param {Command} cmd
+   * @private
+   */
+  _initCommandGroup(cmd) {
+    if (this._defaultCommandGroup && !cmd.helpGroup())
+      cmd.helpGroup(this._defaultCommandGroup);
+  }
+
+  /**
    * Set the name of the command from script filename, such as process.argv[1],
    * or require.main.filename, or __filename.
    *
@@ -2448,12 +2558,14 @@ Expecting one of '${allowedValues.join("', '")}'`);
    */
 
   helpOption(flags, description) {
-    // Support disabling built-in help option.
+    // Support enabling/disabling built-in help option.
     if (typeof flags === 'boolean') {
-      // true is not an expected value. Do something sensible but no unit-test.
-      // istanbul ignore if
       if (flags) {
-        this._helpOption = this._helpOption ?? undefined; // preserve existing option
+        if (this._helpOption === null) this._helpOption = undefined; // reenable
+        if (this._defaultOptionGroup) {
+          // make the option to store the group
+          this._initOptionGroup(this._getHelpOption());
+        }
       } else {
         this._helpOption = null; // disable
       }
@@ -2461,9 +2573,12 @@ Expecting one of '${allowedValues.join("', '")}'`);
     }
 
     // Customise flags and description.
-    flags = flags ?? '-h, --help';
-    description = description ?? 'display help for command';
-    this._helpOption = this.createOption(flags, description);
+    this._helpOption = this.createOption(
+      flags ?? '-h, --help',
+      description ?? 'display help for command',
+    );
+    // init group unless lazy create
+    if (flags || description) this._initOptionGroup(this._helpOption);
 
     return this;
   }
@@ -2492,6 +2607,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
    */
   addHelpOption(option) {
     this._helpOption = option;
+    this._initOptionGroup(option);
     return this;
   }
 
