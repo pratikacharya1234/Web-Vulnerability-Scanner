@@ -1,17 +1,7 @@
 /**
- * Copyright 2020 Google Inc. All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * @license
+ * Copyright 2020 Google Inc.
+ * SPDX-License-Identifier: Apache-2.0
  */
 /**
  * @public
@@ -33,27 +23,27 @@ export type LowerCasePaperFormat = 'letter' | 'legal' | 'tabloid' | 'ledger' | '
  *
  * The sizes of each format are as follows:
  *
- * - `Letter`: 8.5in x 11in
+ * - `Letter`: 8.5in x 11in / 21.59cm x 27.94cm
  *
- * - `Legal`: 8.5in x 14in
+ * - `Legal`: 8.5in x 14in / 21.59cm x 35.56cm
  *
- * - `Tabloid`: 11in x 17in
+ * - `Tabloid`: 11in x 17in / 27.94cm x 43.18cm
  *
- * - `Ledger`: 17in x 11in
+ * - `Ledger`: 17in x 11in / 43.18cm x 27.94cm
  *
- * - `A0`: 33.1in x 46.8in
+ * - `A0`: 33.1102in x 46.811in / 84.1cm x 118.9cm
  *
- * - `A1`: 23.4in x 33.1in
+ * - `A1`: 23.3858in x 33.1102in / 59.4cm x 84.1cm
  *
- * - `A2`: 16.54in x 23.4in
+ * - `A2`: 16.5354in x 23.3858in / 42cm x 59.4cm
  *
- * - `A3`: 11.7in x 16.54in
+ * - `A3`: 11.6929in x 16.5354in / 29.7cm x 42cm
  *
- * - `A4`: 8.27in x 11.7in
+ * - `A4`: 8.2677in x 11.6929in / 21cm x 29.7cm
  *
- * - `A5`: 5.83in x 8.27in
+ * - `A5`: 5.8268in x 8.2677in / 14.8cm x 21cm
  *
- * - `A6`: 4.13in x 5.83in
+ * - `A6`: 4.1339in x 5.8268in / 10.5cm x 14.8cm
  *
  * @public
  */
@@ -90,7 +80,7 @@ export interface PDFOptions {
     headerTemplate?: string;
     /**
      * HTML template for the print footer. Has the same constraints and support
-     * for special classes as {@link PDFOptions | PDFOptions.headerTemplate}.
+     * for special classes as {@link PDFOptions.headerTemplate}.
      */
     footerTemplate?: string;
     /**
@@ -149,10 +139,35 @@ export interface PDFOptions {
      */
     omitBackground?: boolean;
     /**
+     * Generate tagged (accessible) PDF.
+     *
+     * @defaultValue `true`
+     * @experimental
+     */
+    tagged?: boolean;
+    /**
+     * Generate document outline.
+     *
+     * @defaultValue `false`
+     * @experimental
+     */
+    outline?: boolean;
+    /**
      * Timeout in milliseconds. Pass `0` to disable timeout.
+     *
+     * The default value can be changed by using {@link Page.setDefaultTimeout}
+     *
      * @defaultValue `30_000`
      */
     timeout?: number;
+    /**
+     * If true, waits for `document.fonts.ready` to resolve. This might require
+     * activating the page using {@link Page.bringToFront} if the page is in the
+     * background.
+     *
+     * @defaultValue `true`
+     */
+    waitForFonts?: boolean;
 }
 /**
  * @internal
@@ -177,9 +192,12 @@ export interface ParsedPDFOptionsInterface {
 /**
  * @internal
  */
-export type ParsedPDFOptions = Required<Omit<PDFOptions, 'path' | 'format'> & ParsedPDFOptionsInterface>;
+export type ParsedPDFOptions = Required<Omit<PDFOptions, 'path' | 'format' | 'timeout'> & ParsedPDFOptionsInterface>;
 /**
  * @internal
+ *
+ * @remarks All A series paper format sizes in inches are calculated from centimeters
+ * rounded mathematically to four decimal places.
  */
-export declare const paperFormats: Record<LowerCasePaperFormat, PaperFormatDimensions>;
+export declare const paperFormats: Record<LowerCasePaperFormat, Record<'cm' | 'in', PaperFormatDimensions>>;
 //# sourceMappingURL=PDFOptions.d.ts.map
